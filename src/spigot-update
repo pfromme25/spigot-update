@@ -1,0 +1,157 @@
+#!/usr/bin/python3
+# Copyright (C) 2020 Philipp Fromme
+#
+# This file is part of spigot-update, a tool to easily update and install a spigot server installation.
+#
+# This program is free software: you can redistribute it and/or modify
+# it under the terms of the GNU General Public License as published by
+# the Free Software Foundation, either version 3 of the License, or
+# (at your option) any later version.
+#
+# This program is distributed in the hope that it will be useful,
+# but WITHOUT ANY WARRANTY; without even the implied warranty of
+# MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the
+# GNU General Public License for more details.
+#
+# You should have received a copy of the GNU General Public License
+# along with this program.  If not, see <https://www.gnu.org/licenses/>.
+
+import argparse
+import configparser
+import json
+import logging
+import os
+import pwd
+import sys
+import subprocess
+import urllib.request
+from pathlib import Path
+
+def becomeMCUser():
+    os.setregid(root_gid, mc_gid)
+    os.setreuid(root_uid, mc_uid)
+    os.environ['HOME'] = mc_home
+
+def becomeRootUser():
+    os.setregid(root_gid, root_gid)
+    os.setreuid(root_uid, root_uid)
+    os.environ['HOME'] = root_home
+
+parser = argparse.ArgumentParser(description="Updates a local spigot server installation.")
+parser.add_argument("-d", "--dry", help="Do not write anything to disk, only output whether the server needs to be updated.", action="store_true")
+parser.add_argument("-i", "--install", help="Only stop the server (if necessary) without restarting after the update/install has finished.", action="store_true")
+parser.add_argument("-l", "--level", help="Set the log level to use.", nargs="?", default="WARNING")
+parser.add_argument("-v", "--verbose", help="Verbose output.", action="store_true")
+args = parser.parse_args()
+
+config_path = '/etc/spigot-update.conf'
+config = configparser.ConfigParser()
+config.read(config_path)
+rootu = config['DEFAULT']['rootu']
+user = config['DEFAULT']['user']
+logDir = config['DEFAULT']['logDir']
+server_sec = config.sections()
+server_list = []
+
+root_uid = pwd.getpwnam(rootu).pw_uid
+root_gid = pwd.getpwnam(rootu).pw_gid
+root_home = os.path.expanduser("~"+rootu)
+mc_uid = pwd.getpwnam(user).pw_uid
+mc_gid = pwd.getpwnam(user).pw_gid
+mc_home = os.path.expanduser("~"+user)
+
+logging.basicConfig(format='%(asctime)s %(name)s:%(message)s', datefmt='%b %d %H:%M:%S', filename=os.path.join(logDir, "spigot-update.log"), level=args.level)
+logger = logging.getLogger()
+if args.verbose:
+    printLogger = logging.StreamHandler(sys.stdout)
+    logger.addHandler(printLogger)
+
+buildtools_dl_url = "https://hub.spigotmc.org/jenkins/job/BuildTools/lastStableBuild/artifact/target/BuildTools.jar"
+buildtools_filename = "BuildTools.jar"
+version_info = "https://hub.spigotmc.org/versions/"
+git_prereq = ["git", "config", "--global","--unset", "core.autocrlf"]
+update = False
+write = False
+install = False
+becomeMCUser()
+for server in server_sec:
+    sconf = config[server]
+    path = sconf["path"]
+    start = sconf["start"].split(' ')
+    stop = sconf["stop"].split(' ')
+    isactive = sconf["isactive"].split(' ')
+    version = sconf["version"]
+    if config.has_option(server, "cache"):
+        cache = sconf["cache"]
+    else:
+        fn = server+".cache"
+        cache = os.path.join(path, fn)
+    server_list.append({'server': server, 'path': path, 'start': start, 'stop': stop, 'isactive': isactive, 'version': version, 'cache': cache})
+
+if not server_list:
+    logger.warning("No server found in config file at {}".format(config_path))
+    logger.warning("Script exited. No files were changed.")
+    exit()
+
+for server in server_list:
+    version = server["version"]
+    path = server["path"]
+    start = server["start"]
+    stop = server["stop"]
+    isactive = server["isactive"]
+    cache_file = server["cache"]
+    if not os.path.exists(path):
+        logger.info("{} does not exit. Only installing server.".format(path))
+        os.mkdir(path)
+        install = True
+    os.chdir(server["path"])
+    update = False
+    buildtools_path = os.path.join(path, buildtools_filename)
+    version_info_url = version_info + version + ".json"
+    request = urllib.request.urlopen(version_info_url)
+    remote_json = json.load(request)
+    if os.path.isfile(cache_file):
+        logger.info("Cache file found at {}".format(cache_file))
+        with open(cache_file, 'r', encoding="utf-8") as f:
+            local_json = json.load(f)
+            if remote_json["name"] != local_json["name"]:
+                logger.info("Server outdated.")
+                update = True
+            else:
+                logger.info("Server name matches.")
+                logger.info("Nothing to update.")
+    else:
+        logger.info("Cache file NOT found at {}".format(cache_file))
+        update = True      
+    if args.dry:
+        if update:
+            logger.info("Update available.")
+        else:
+            logger.info("Server is up to date.")
+        exit()
+    elif update:
+        urllib.request.urlretrieve(buildtools_dl_url, buildtools_path)
+        isactive_sp = subprocess.Popen(isactive, stdout=subprocess.PIPE)
+        isactive_output = isactive_sp.communicate()[0]
+        if isactive_sp.returncode == 0:
+            becomeRootUser()
+            subprocess.run(stop)
+            becomeMCUser()
+        subprocess.run(git_prereq)
+        buildtools_output = subprocess.check_output(["java", "-jar", buildtools_path, "--rev", version])
+        logger.info(buildtools_output.decode('utf-8'))
+        with open(cache_file, 'w', encoding="utf-8") as f:
+            json.dump(remote_json, f)   
+        becomeRootUser()
+        for root, dirs, files in os.walk(path):
+            for d in dirs:
+                os.chown(os.path.join(root,d), mc_uid, mc_gid)
+            for f in files:
+                os.chown(os.path.join(root,f), mc_uid, mc_gid)
+        if not install:
+            subprocess.run(start)
+    else:
+        logger.info("Server is up to date.")
+    
+    
+    
