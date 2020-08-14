@@ -39,7 +39,6 @@ def becomeRootUser():
 
 parser = argparse.ArgumentParser(description="Updates a local spigot server installation.")
 parser.add_argument("-d", "--dry", help="Do not write anything to disk, only output whether the server needs to be updated.", action="store_true")
-parser.add_argument("-i", "--install", help="Only stop the server (if necessary) without restarting after the update/install has finished.", action="store_true")
 parser.add_argument("-l", "--level", help="Set the log level to use.", nargs="?", default="WARNING")
 parser.add_argument("-v", "--verbose", help="Verbose output.", action="store_true")
 args = parser.parse_args()
@@ -50,6 +49,7 @@ config.read(config_path)
 rootu = config['DEFAULT']['rootu']
 user = config['DEFAULT']['user']
 logDir = config['DEFAULT']['logDir']
+wd = config['DEFAULT']['wd']
 server_sec = config.sections()
 server_list = []
 
@@ -66,14 +66,6 @@ if args.verbose:
     printLogger = logging.StreamHandler(sys.stdout)
     logger.addHandler(printLogger)
 
-buildtools_dl_url = "https://hub.spigotmc.org/jenkins/job/BuildTools/lastStableBuild/artifact/target/BuildTools.jar"
-buildtools_filename = "BuildTools.jar"
-version_info = "https://hub.spigotmc.org/versions/"
-git_prereq = ["git", "config", "--global","--unset", "core.autocrlf"]
-update = False
-write = False
-install = False
-becomeMCUser()
 for server in server_sec:
     sconf = config[server]
     path = sconf["path"]
@@ -93,6 +85,13 @@ if not server_list:
     logger.warning("Script exited. No files were changed.")
     exit()
 
+buildtools_dl_url = "https://hub.spigotmc.org/jenkins/job/BuildTools/lastStableBuild/artifact/target/BuildTools.jar"
+buildtools_filename = "BuildTools.jar"
+buildtools_path = os.path.join(wd, buildtools_filename)
+urllib.request.urlretrieve(buildtools_dl_url, buildtools_path)
+
+version_info = "https://hub.spigotmc.org/versions/"
+git_prereq = ["git", "config", "--global","--unset", "core.autocrlf"]
 for server in server_list:
     version = server["version"]
     path = server["path"]
@@ -100,58 +99,64 @@ for server in server_list:
     stop = server["stop"]
     isactive = server["isactive"]
     cache_file = server["cache"]
-    if not os.path.exists(path):
-        logger.info("{} does not exit. Only installing server.".format(path))
-        os.mkdir(path)
-        install = True
-    os.chdir(server["path"])
+    install = False
     update = False
-    buildtools_path = os.path.join(path, buildtools_filename)
+    write = False
+    if not os.path.exists(path):
+        logger.info("{} does not exist. Only installing server.".format(path))
+        becomeMCUser()
+        os.mkdir(path)
+        becomeRootUser()
+        install = True
     version_info_url = version_info + version + ".json"
     request = urllib.request.urlopen(version_info_url)
     remote_json = json.load(request)
-    if os.path.isfile(cache_file):
-        logger.info("Cache file found at {}".format(cache_file))
-        with open(cache_file, 'r', encoding="utf-8") as f:
-            local_json = json.load(f)
-            if remote_json["name"] != local_json["name"]:
-                logger.info("Server outdated.")
-                update = True
-            else:
-                logger.info("Server name matches.")
-                logger.info("Nothing to update.")
-    else:
-        logger.info("Cache file NOT found at {}".format(cache_file))
-        update = True      
+    if not install:
+        if os.path.isfile(cache_file):
+            logger.info("Cache file found at {}".format(cache_file))
+            with open(cache_file, 'r', encoding="utf-8") as f:
+                local_json = json.load(f)
+                if remote_json["name"] != local_json["name"]:
+                    logger.info("Server outdated.")
+                    update = True
+                else:
+                    logger.info("Server name matches.")
+                    logger.info("Nothing to update.")
+        else:
+            logger.info("Cache file NOT found at {}".format(cache_file))
+            update = True     
+    cmd = 'su {} --shell /bin/bash -c "java -jar {} --rev {} --output-dir {}"'.format(user, buildtools_path, version, path) 
     if args.dry:
+        logger.info("Command to run: {}".format(cmd))
         if update:
             logger.info("Update available.")
+        elif install:
+            logger.info("Server not installed.")
         else:
             logger.info("Server is up to date.")
         exit()
     elif update:
-        urllib.request.urlretrieve(buildtools_dl_url, buildtools_path)
+        becomeMCUser()
+        subprocess.run(git_prereq)
+        becomeRootUser()
         isactive_sp = subprocess.Popen(isactive, stdout=subprocess.PIPE)
         isactive_output = isactive_sp.communicate()[0]
+        restart = False
         if isactive_sp.returncode == 0:
-            becomeRootUser()
+            restart = True
             subprocess.run(stop)
-            becomeMCUser()
-        subprocess.run(git_prereq)
-        buildtools_output = subprocess.check_output(["java", "-jar", buildtools_path, "--rev", version])
-        logger.info(buildtools_output.decode('utf-8'))
-        with open(cache_file, 'w', encoding="utf-8") as f:
-            json.dump(remote_json, f)   
-        becomeRootUser()
-        for root, dirs, files in os.walk(path):
-            for d in dirs:
-                os.chown(os.path.join(root,d), mc_uid, mc_gid)
-            for f in files:
-                os.chown(os.path.join(root,f), mc_uid, mc_gid)
-        if not install:
+        logger.info(cmd)
+        os.system(cmd)
+        if restart:
             subprocess.run(start)
+    elif install:
+        becomeMCUser()
+        subprocess.run(git_prereq)
+        becomeRootUser()
+        logger.info(cmd)
+        os.system(cmd)
     else:
         logger.info("Server is up to date.")
-    
-    
-    
+    if write:
+        with open(cache_file, 'w', encoding="utf-8") as f:
+            json.dump(remote_json, f)
