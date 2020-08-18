@@ -86,6 +86,8 @@ if not server_list:
     exit()
 
 buildtools_dl_url = "https://hub.spigotmc.org/jenkins/job/BuildTools/lastStableBuild/artifact/target/BuildTools.jar"
+if not os.path.isdir(wd):
+    os.mkdir(wd)
 buildtools_filename = "BuildTools.jar"
 buildtools_path = os.path.join(wd, buildtools_filename)
 urllib.request.urlretrieve(buildtools_dl_url, buildtools_path)
@@ -125,7 +127,7 @@ for server in server_list:
         else:
             logger.info("Cache file NOT found at {}".format(cache_file))
             update = True     
-    cmd = 'su {} --shell /bin/bash -c "java -jar {} --rev {} --output-dir {} > /dev/null 2>&1"'.format(user, buildtools_path, version, path) 
+    cmd = 'su {} --shell /bin/bash -c "cd {} && java -jar {} --rev {} --output-dir {} > /dev/null 2>&1"'.format(user, path, buildtools_path, version, path) 
     if args.dry:
         logger.info("Command to run: {}".format(cmd))
         if update:
