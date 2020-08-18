@@ -125,7 +125,7 @@ for server in server_list:
         else:
             logger.info("Cache file NOT found at {}".format(cache_file))
             update = True     
-    cmd = 'su {} --shell /bin/bash -c "java -jar {} --rev {} --output-dir {}"'.format(user, buildtools_path, version, path) 
+    cmd = 'su {} --shell /bin/bash -c "java -jar {} --rev {} --output-dir {} > /dev/null 2>&1"'.format(user, buildtools_path, version, path) 
     if args.dry:
         logger.info("Command to run: {}".format(cmd))
         if update:
