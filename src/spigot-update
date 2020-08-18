@@ -149,6 +149,7 @@ for server in server_list:
             subprocess.run(stop)
         logger.info(cmd)
         os.system(cmd)
+        write = True
         if restart:
             subprocess.run(start)
     elif install:
@@ -157,6 +158,7 @@ for server in server_list:
         becomeRootUser()
         logger.info(cmd)
         os.system(cmd)
+        write = True
     else:
         logger.info("Server is up to date.")
     if write:
